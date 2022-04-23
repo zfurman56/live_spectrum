@@ -20,10 +20,9 @@ struct MicData(Arc<Mutex<Receiver<f32>>>);
 
 fn main() {
     let (tx, rx) = channel();
-    // If _stream is dropped, the input stream closes
-    let _stream = setup_mic(tx);
 
     App::new()
+        .insert_non_send_resource(setup_mic(tx))
         .insert_resource(ClearColor(Color::rgb(1.0, 1.0, 1.0)))
         .insert_resource(Msaa { samples: 4 })
         .insert_resource(STFT::<f32>::new(WindowType::Hanning, 2*OUT_SIZE, 1024))
