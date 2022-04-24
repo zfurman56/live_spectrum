@@ -7,10 +7,11 @@ use std::sync::mpsc::{channel, Sender, Receiver};
 use std::sync::{Arc, Mutex};
 
 
-const OUT_SIZE: usize = 2048;
+const DFT_OUT_SIZE: usize = 2048;
+const DFT_STEP_SIZE: usize = 1024;
 
 #[derive(Component)]
-struct Spectrum([f32; OUT_SIZE]);
+struct Spectrum([f32; DFT_OUT_SIZE]);
 #[derive(Component)]
 struct MicSpectrum;
 #[derive(Component)]
@@ -25,7 +26,7 @@ fn main() {
         .insert_non_send_resource(setup_mic(tx))
         .insert_resource(ClearColor(Color::rgb(1.0, 1.0, 1.0)))
         .insert_resource(Msaa { samples: 4 })
-        .insert_resource(STFT::<f32>::new(WindowType::Hanning, 2*OUT_SIZE, 1024))
+        .insert_resource(STFT::<f32>::new(WindowType::Hanning, 2*DFT_OUT_SIZE, DFT_STEP_SIZE))
         .insert_resource(MicData(Arc::new(Mutex::new(rx))))
         .add_plugins(DefaultPlugins)
         .add_plugin(ShapePlugin)
@@ -40,17 +41,13 @@ fn main() {
 fn setup_system(mut commands: Commands) {
     commands.spawn_bundle(OrthographicCameraBundle::new_2d());
 
-    commands.spawn_bundle(GeometryBuilder::build_as(
-        &PathBuilder::new().build(),
-        DrawMode::Stroke(StrokeMode::new(Color::SILVER, 1.0)),
-        Transform::default(),
-    )).insert(Spectrum([0.0; OUT_SIZE])).insert(MicSpectrum);
+    commands.spawn().insert(Spectrum([0.0; DFT_OUT_SIZE])).insert(MicSpectrum);
 
     commands.spawn_bundle(GeometryBuilder::build_as(
         &PathBuilder::new().build(),
         DrawMode::Stroke(StrokeMode::new(Color::BLACK, 1.0)),
         Transform::default(),
-    )).insert(Spectrum([0.0; OUT_SIZE])).insert(EnvelopeSpectrum);
+    )).insert(Spectrum([0.0; DFT_OUT_SIZE])).insert(EnvelopeSpectrum);
 }
 
 fn setup_mic(tx: Sender<f32>) -> Stream {
