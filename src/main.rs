@@ -1,9 +1,8 @@
 use bevy::prelude::*;
 use bevy_prototype_lyon::prelude::*;
 use stft::{STFT, WindowType};
-use cpal::Stream;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use std::sync::mpsc::{channel, Sender, Receiver};
+use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 
 
@@ -20,16 +19,12 @@ struct EnvelopeSpectrum;
 struct MicData(Arc<Mutex<Receiver<f32>>>);
 
 fn main() {
-    let (tx, rx) = channel();
-
     App::new()
-        .insert_non_send_resource(setup_mic(tx))
         .insert_resource(ClearColor(Color::rgb(1.0, 1.0, 1.0)))
         .insert_resource(Msaa { samples: 4 })
-        .insert_resource(STFT::<f32>::new(WindowType::Hanning, 2*DFT_OUT_SIZE, DFT_STEP_SIZE))
-        .insert_resource(MicData(Arc::new(Mutex::new(rx))))
         .add_plugins(DefaultPlugins)
         .add_plugin(ShapePlugin)
+        .add_startup_system(setup_mic.exclusive_system())
         .add_startup_system(setup_spectra)
         .add_startup_system(draw_scale)
         .add_system(mic_input)
@@ -51,7 +46,9 @@ fn setup_spectra(mut commands: Commands) {
     )).insert(Spectrum([0.0; DFT_OUT_SIZE])).insert(EnvelopeSpectrum);
 }
 
-fn setup_mic(tx: Sender<f32>) -> Stream {
+fn setup_mic(world: &mut World) {
+    let (tx, rx) = channel();
+
     let host = cpal::default_host();
     let device = host.default_input_device().expect("No microphone found");
 
@@ -70,7 +67,10 @@ fn setup_mic(tx: Sender<f32>) -> Stream {
     ).unwrap();
     stream.play().unwrap();
 
-    stream
+    world.insert_non_send_resource(stream);
+    world.insert_resource(MicData(Arc::new(Mutex::new(rx))));
+    world.insert_resource(STFT::<f32>::new(WindowType::Hanning, 2*DFT_OUT_SIZE, DFT_STEP_SIZE));
+
 }
 
 fn draw_scale(mut commands: Commands, asset_server: Res<AssetServer>) {
