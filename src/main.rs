@@ -31,6 +31,7 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugin(ShapePlugin)
         .add_startup_system(setup_spectra)
+        .add_startup_system(draw_scale)
         .add_system(mic_input)
         .add_system(envelope_spectrum)
         .add_system(animate_spectra)
@@ -70,6 +71,61 @@ fn setup_mic(tx: Sender<f32>) -> Stream {
     stream.play().unwrap();
 
     stream
+}
+
+fn draw_scale(mut commands: Commands, asset_server: Res<AssetServer>) {
+    let mut paths = Vec::new();
+    let mut labels = Vec::new();
+
+    let mut path_builder = PathBuilder::new();
+
+    let width = 400.0;
+    let height = -100.0;
+    let sample_rate = 48000.0;
+
+    // Line containing tick marks
+    path_builder.move_to(Vec2::new(-width, height));
+    path_builder.line_to(Vec2::new(width, height));
+    paths.push(path_builder.build());
+
+    let font = asset_server.load("fonts/EBGaramond-Medium.ttf");
+    let text_style = TextStyle {
+        font,
+        font_size: 12.0,
+        color: Color::GRAY,
+    };
+    let text_alignment = TextAlignment {
+        vertical: VerticalAlign::Center,
+        horizontal: HorizontalAlign::Center,
+    };
+
+    let num_ticks = 20;
+    for i in 0..=num_ticks {
+        let tick_pos = -width + (((i as f32) / (num_ticks as f32)) * width * 2.0);
+        let mut path_builder = PathBuilder::new();
+        path_builder.move_to(Vec2::new(tick_pos, height+10.0));
+        path_builder.line_to(Vec2::new(tick_pos, height-10.0));
+        paths.push(path_builder.build());
+        let freq_hz = ((i as f32)/(num_ticks as f32)) * sample_rate / 4.0;
+        labels.push((format!("{:.0}", freq_hz), tick_pos));
+    }
+
+    for path in paths.iter() {
+        commands.spawn_bundle(GeometryBuilder::build_as(
+            path,
+            DrawMode::Stroke(StrokeMode::new(Color::GRAY, 1.0)),
+            Transform::default(),
+        ));
+    }
+
+    for (text, pos) in labels {
+        commands.spawn_bundle(Text2dBundle {
+            text: Text::with_section(text, text_style.clone(), text_alignment),
+            transform: Transform::from_translation(Vec3::new(pos, height-20.0, 0.0)),
+            ..default()
+        });
+    }
+
 }
 
 fn animate_spectra(mut query: Query<(&mut Path, &Spectrum)>) {
