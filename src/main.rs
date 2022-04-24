@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 
 const DFT_OUT_SIZE: usize = 2048;
+const MAX_DFT_BIN: usize = DFT_OUT_SIZE/2;
 const DFT_STEP_SIZE: usize = 1024;
 
 #[derive(Component)]
@@ -108,12 +109,16 @@ fn draw_scale(
     let num_ticks = 20;
     for i in 0..=num_ticks {
         let tick_pos = -width + (((i as f32) / (num_ticks as f32)) * width * 2.0);
+
         let mut path_builder = PathBuilder::new();
         path_builder.move_to(Vec2::new(tick_pos, height+10.0));
         path_builder.line_to(Vec2::new(tick_pos, height-10.0));
         paths.push(path_builder.build());
-        let freq_hz = ((i as f32)/(num_ticks as f32)) * (sample_rate.0 as f32) / 4.0;
-        labels.push((format!("{:.0}", freq_hz), tick_pos));
+
+        let freq_hz = ((i as f32) / (num_ticks as f32))
+            * ((MAX_DFT_BIN as f32) / (2.0 * DFT_OUT_SIZE as f32))
+            * (sample_rate.0 as f32);
+        labels.push((format!("{:.0}", freq_hz), Vec3::new(tick_pos, height-20.0, 0.0)));
     }
 
     for path in paths.iter() {
@@ -127,7 +132,7 @@ fn draw_scale(
     for (text, pos) in labels {
         commands.spawn_bundle(Text2dBundle {
             text: Text::with_section(text, text_style.clone(), text_alignment),
-            transform: Transform::from_translation(Vec3::new(pos, height-20.0, 0.0)),
+            transform: Transform::from_translation(pos),
             ..default()
         });
     }
@@ -139,7 +144,7 @@ fn animate_spectra(mut query: Query<(&mut Path, &Spectrum)>) {
         let mut path_builder = PathBuilder::new();
 
         let width = 400.0;
-        let samples = spectrum.0.len()/2;
+        let samples = MAX_DFT_BIN;
 
         for i in 0..samples {
             let height = (spectrum.0[i] as f32)*100.0 - 50.0;
