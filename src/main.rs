@@ -6,7 +6,7 @@ use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 
 
-const DFT_OUT_SIZE: usize = 2048;
+const DFT_OUT_SIZE: usize = 2048; // Must be power of 2
 const MAX_DFT_BIN: usize = DFT_OUT_SIZE/2;
 const DFT_STEP_SIZE: usize = 1024;
 const ENVELOPE_FILTER_CONST: f32 = 0.95;
@@ -39,6 +39,7 @@ fn main() {
         .run();
 }
 
+// Setup the spectra we have and the paths we'll use for associated graphs
 fn setup_spectra(mut commands: Commands) {
     commands.spawn_bundle(OrthographicCameraBundle::new_2d());
 
@@ -51,7 +52,10 @@ fn setup_spectra(mut commands: Commands) {
     )).insert(Spectrum([0.0; DFT_OUT_SIZE])).insert(EnvelopeSpectrum);
 }
 
+// Setup gathering of microphone data
+// We need exclusive world access to add non-send resources
 fn setup_mic(world: &mut World) {
+    // Use channel to send data from the mic callback thread back to our worker threads
     let (tx, rx) = channel();
 
     let host = cpal::default_host();
@@ -60,6 +64,8 @@ fn setup_mic(world: &mut World) {
     let config = device
         .default_input_config()
         .expect("No supported mic config");
+
+    // Save the sample rate so we can use it to find frequencies later
     let sample_rate = config.sample_rate();
 
     let stream = device.build_input_stream(
@@ -80,6 +86,7 @@ fn setup_mic(world: &mut World) {
 
 }
 
+// Draw the scale for our graph
 fn draw_scale(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -115,11 +122,13 @@ fn draw_scale(
     for i in 0..=num_ticks {
         let tick_pos = -width + (((i as f32) / (num_ticks as f32)) * width * 2.0);
 
+        // Draw tick marks
         let mut path_builder = PathBuilder::new();
         path_builder.move_to(Vec2::new(tick_pos, height+10.0));
         path_builder.line_to(Vec2::new(tick_pos, height-10.0));
         paths.push(path_builder.build());
 
+        // Draw labels
         let freq_hz = ((i as f32) / (num_ticks as f32))
             * ((MAX_DFT_BIN as f32) / (2.0 * DFT_OUT_SIZE as f32))
             * (sample_rate.0 as f32);
@@ -144,6 +153,7 @@ fn draw_scale(
 
 }
 
+// Actually draw the graph for each frame
 fn animate_spectra(mut query: Query<(&mut Path, &Spectrum)>) {
     for (mut path, spectrum) in query.iter_mut() {
         let mut path_builder = PathBuilder::new();
@@ -159,6 +169,7 @@ fn animate_spectra(mut query: Query<(&mut Path, &Spectrum)>) {
     }
 }
 
+// Filter the raw spectrum from the microphone
 fn envelope_spectrum(
     mic_query: Query<&Spectrum, (With<RawSpectrum>, Without<EnvelopeSpectrum>)>,
     mut envelope_query: Query<&mut Spectrum, With<EnvelopeSpectrum>>
@@ -172,6 +183,7 @@ fn envelope_spectrum(
     }
 }
 
+// Take our microphone data and get frequency information from it using the STFT
 fn mic_input(
     mut query: Query<&mut Spectrum, With<RawSpectrum>>,
     mut stft: ResMut<STFT::<f32>>,
