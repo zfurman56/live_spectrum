@@ -98,6 +98,8 @@ fn draw_scale(
     path_builder.line_to(Vec2::new(width, height));
     paths.push(path_builder.build());
 
+    labels.push(("Hz".to_string(), Vec3::new(-width - 20.0, height, 0.0)));
+
     let font = asset_server.load("fonts/EBGaramond-Medium.ttf");
     let text_style = TextStyle {
         font,
