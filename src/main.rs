@@ -16,6 +16,7 @@ struct MicSpectrum;
 #[derive(Component)]
 struct EnvelopeSpectrum;
 
+struct MicSampleRate(u32);
 struct MicData(Arc<Mutex<Receiver<f32>>>);
 
 fn main() {
@@ -55,6 +56,7 @@ fn setup_mic(world: &mut World) {
     let config = device
         .default_input_config()
         .expect("No supported mic config");
+    let sample_rate = config.sample_rate();
 
     let stream = device.build_input_stream(
         &config.into(),
@@ -68,12 +70,17 @@ fn setup_mic(world: &mut World) {
     stream.play().unwrap();
 
     world.insert_non_send_resource(stream);
+    world.insert_resource(MicSampleRate(sample_rate.0));
     world.insert_resource(MicData(Arc::new(Mutex::new(rx))));
     world.insert_resource(STFT::<f32>::new(WindowType::Hanning, 2*DFT_OUT_SIZE, DFT_STEP_SIZE));
 
 }
 
-fn draw_scale(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn draw_scale(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    sample_rate: Res<MicSampleRate>
+) {
     let mut paths = Vec::new();
     let mut labels = Vec::new();
 
@@ -81,7 +88,6 @@ fn draw_scale(mut commands: Commands, asset_server: Res<AssetServer>) {
 
     let width = 400.0;
     let height = -100.0;
-    let sample_rate = 48000.0;
 
     // Line containing tick marks
     path_builder.move_to(Vec2::new(-width, height));
@@ -106,7 +112,7 @@ fn draw_scale(mut commands: Commands, asset_server: Res<AssetServer>) {
         path_builder.move_to(Vec2::new(tick_pos, height+10.0));
         path_builder.line_to(Vec2::new(tick_pos, height-10.0));
         paths.push(path_builder.build());
-        let freq_hz = ((i as f32)/(num_ticks as f32)) * sample_rate / 4.0;
+        let freq_hz = ((i as f32)/(num_ticks as f32)) * (sample_rate.0 as f32) / 4.0;
         labels.push((format!("{:.0}", freq_hz), tick_pos));
     }
 
