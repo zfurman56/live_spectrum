@@ -30,7 +30,7 @@ fn main() {
         .insert_resource(MicData(Arc::new(Mutex::new(rx))))
         .add_plugins(DefaultPlugins)
         .add_plugin(ShapePlugin)
-        .add_startup_system(setup_system)
+        .add_startup_system(setup_spectra)
         .add_system(mic_input)
         .add_system(envelope_spectrum)
         .add_system(animate_spectra)
@@ -38,7 +38,7 @@ fn main() {
         .run();
 }
 
-fn setup_system(mut commands: Commands) {
+fn setup_spectra(mut commands: Commands) {
     commands.spawn_bundle(OrthographicCameraBundle::new_2d());
 
     commands.spawn().insert(Spectrum([0.0; DFT_OUT_SIZE])).insert(MicSpectrum);
