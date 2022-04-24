@@ -9,11 +9,12 @@ use std::sync::{Arc, Mutex};
 const DFT_OUT_SIZE: usize = 2048;
 const MAX_DFT_BIN: usize = DFT_OUT_SIZE/2;
 const DFT_STEP_SIZE: usize = 1024;
+const ENVELOPE_FILTER_CONST: f32 = 0.95;
 
 #[derive(Component)]
 struct Spectrum([f32; DFT_OUT_SIZE]);
 #[derive(Component)]
-struct MicSpectrum;
+struct RawSpectrum;
 #[derive(Component)]
 struct EnvelopeSpectrum;
 
@@ -39,7 +40,7 @@ fn main() {
 fn setup_spectra(mut commands: Commands) {
     commands.spawn_bundle(OrthographicCameraBundle::new_2d());
 
-    commands.spawn().insert(Spectrum([0.0; DFT_OUT_SIZE])).insert(MicSpectrum);
+    commands.spawn().insert(Spectrum([0.0; DFT_OUT_SIZE])).insert(RawSpectrum);
 
     commands.spawn_bundle(GeometryBuilder::build_as(
         &PathBuilder::new().build(),
@@ -155,19 +156,20 @@ fn animate_spectra(mut query: Query<(&mut Path, &Spectrum)>) {
 }
 
 fn envelope_spectrum(
-    mic_query: Query<&Spectrum, (With<MicSpectrum>, Without<EnvelopeSpectrum>)>,
+    mic_query: Query<&Spectrum, (With<RawSpectrum>, Without<EnvelopeSpectrum>)>,
     mut envelope_query: Query<&mut Spectrum, With<EnvelopeSpectrum>>
 ) {
     let mic = mic_query.single();
     let mut envelope = envelope_query.single_mut();
 
     for i in 0..envelope.0.len() {
-        envelope.0[i] = (envelope.0[i]*0.95 + mic.0[i]*0.05).max(mic.0[i]);
+        envelope.0[i] =
+            (envelope.0[i]*ENVELOPE_FILTER_CONST + mic.0[i]*(1.0-ENVELOPE_FILTER_CONST)).max(mic.0[i]);
     }
 }
 
 fn mic_input(
-    mut query: Query<&mut Spectrum, With<MicSpectrum>>,
+    mut query: Query<&mut Spectrum, With<RawSpectrum>>,
     mut stft: ResMut<STFT::<f32>>,
     mic_data: Res<MicData>
 ) {
