@@ -7,9 +7,11 @@ use std::sync::{Arc, Mutex};
 
 
 const DFT_OUT_SIZE: usize = 2048; // Must be power of 2
-const MAX_DFT_BIN: usize = DFT_OUT_SIZE/2;
 const DFT_STEP_SIZE: usize = 1024;
+const MAX_DFT_BIN: usize = DFT_OUT_SIZE/2;
+
 const ENVELOPE_FILTER_CONST: f32 = 0.95;
+
 const PLOT_WIDTH: f32 = 800.0;
 const PLOT_Y_ZERO: f32 = -50.0;
 
@@ -22,6 +24,7 @@ struct EnvelopeSpectrum;
 
 struct MicSampleRate(u32);
 struct MicData(Arc<Mutex<Receiver<f32>>>);
+
 
 fn main() {
     App::new()
@@ -37,19 +40,6 @@ fn main() {
         .add_system(animate_spectra)
         .add_system(bevy::input::system::exit_on_esc_system)
         .run();
-}
-
-// Setup the spectra we have and the paths we'll use for associated graphs
-fn setup_spectra(mut commands: Commands) {
-    commands.spawn_bundle(OrthographicCameraBundle::new_2d());
-
-    commands.spawn().insert(Spectrum([0.0; DFT_OUT_SIZE])).insert(RawSpectrum);
-
-    commands.spawn_bundle(GeometryBuilder::build_as(
-        &PathBuilder::new().build(),
-        DrawMode::Stroke(StrokeMode::new(Color::BLACK, 1.0)),
-        Transform::default(),
-    )).insert(Spectrum([0.0; DFT_OUT_SIZE])).insert(EnvelopeSpectrum);
 }
 
 // Setup gathering of microphone data
@@ -86,6 +76,50 @@ fn setup_mic(world: &mut World) {
 
 }
 
+// Setup the spectra we have and the paths we'll use for associated graphs
+fn setup_spectra(mut commands: Commands) {
+    commands.spawn_bundle(OrthographicCameraBundle::new_2d());
+
+    commands.spawn().insert(Spectrum([0.0; DFT_OUT_SIZE])).insert(RawSpectrum);
+
+    commands.spawn_bundle(GeometryBuilder::build_as(
+        &PathBuilder::new().build(),
+        DrawMode::Stroke(StrokeMode::new(Color::BLACK, 1.0)),
+        Transform::default(),
+    )).insert(Spectrum([0.0; DFT_OUT_SIZE])).insert(EnvelopeSpectrum);
+}
+
+// Take our microphone data and get frequency information from it using the STFT
+fn mic_input(
+    mut query: Query<&mut Spectrum, With<RawSpectrum>>,
+    mut stft: ResMut<STFT::<f32>>,
+    mic_data: Res<MicData>
+) {
+    let mut spectrum = query.single_mut();
+    let data: Vec<f32> = mic_data.0.lock().unwrap().try_iter().collect();
+    stft.append_samples(&data);
+
+    while stft.contains_enough_to_compute() {
+        stft.compute_column(&mut spectrum.0[..]);
+        // throw away data if it wasn't read by animate_spectrum fast enough
+        stft.move_to_next_column();
+    }
+}
+
+// Filter the raw spectrum from the microphone
+fn envelope_spectrum(
+    mic_query: Query<&Spectrum, (With<RawSpectrum>, Without<EnvelopeSpectrum>)>,
+    mut envelope_query: Query<&mut Spectrum, With<EnvelopeSpectrum>>
+) {
+    let mic = mic_query.single();
+    let mut envelope = envelope_query.single_mut();
+
+    for i in 0..envelope.0.len() {
+        envelope.0[i] =
+            (envelope.0[i]*ENVELOPE_FILTER_CONST + mic.0[i]*(1.0-ENVELOPE_FILTER_CONST)).max(mic.0[i]);
+    }
+}
+
 // Draw the scale for our graph
 fn draw_scale(
     mut commands: Commands,
@@ -99,6 +133,19 @@ fn draw_scale(
 
     let width = PLOT_WIDTH / 2.0;
     let height = PLOT_Y_ZERO - 30.0;
+    let num_ticks = 20;
+
+    let color = Color::GRAY;
+    let font = asset_server.load("fonts/EBGaramond-Medium.ttf");
+    let text_style = TextStyle {
+        font,
+        font_size: 12.0,
+        color: color,
+    };
+    let text_alignment = TextAlignment {
+        vertical: VerticalAlign::Center,
+        horizontal: HorizontalAlign::Center,
+    };
 
     // Line containing tick marks
     path_builder.move_to(Vec2::new(-width, height));
@@ -107,18 +154,6 @@ fn draw_scale(
 
     labels.push(("Hz".to_string(), Vec3::new(-width - 20.0, height, 0.0)));
 
-    let font = asset_server.load("fonts/EBGaramond-Medium.ttf");
-    let text_style = TextStyle {
-        font,
-        font_size: 12.0,
-        color: Color::GRAY,
-    };
-    let text_alignment = TextAlignment {
-        vertical: VerticalAlign::Center,
-        horizontal: HorizontalAlign::Center,
-    };
-
-    let num_ticks = 20;
     for i in 0..=num_ticks {
         let tick_pos = -width + (((i as f32) / (num_ticks as f32)) * width * 2.0);
 
@@ -138,7 +173,7 @@ fn draw_scale(
     for path in paths.iter() {
         commands.spawn_bundle(GeometryBuilder::build_as(
             path,
-            DrawMode::Stroke(StrokeMode::new(Color::GRAY, 1.0)),
+            DrawMode::Stroke(StrokeMode::new(color, 1.0)),
             Transform::default(),
         ));
     }
@@ -166,37 +201,6 @@ fn animate_spectra(mut query: Query<(&mut Path, &Spectrum)>) {
             path_builder.line_to(Vec2::new(-width+((i as f32) / (samples as f32))*width*2.0, height));
         }
         *path = path_builder.build();
-    }
-}
-
-// Filter the raw spectrum from the microphone
-fn envelope_spectrum(
-    mic_query: Query<&Spectrum, (With<RawSpectrum>, Without<EnvelopeSpectrum>)>,
-    mut envelope_query: Query<&mut Spectrum, With<EnvelopeSpectrum>>
-) {
-    let mic = mic_query.single();
-    let mut envelope = envelope_query.single_mut();
-
-    for i in 0..envelope.0.len() {
-        envelope.0[i] =
-            (envelope.0[i]*ENVELOPE_FILTER_CONST + mic.0[i]*(1.0-ENVELOPE_FILTER_CONST)).max(mic.0[i]);
-    }
-}
-
-// Take our microphone data and get frequency information from it using the STFT
-fn mic_input(
-    mut query: Query<&mut Spectrum, With<RawSpectrum>>,
-    mut stft: ResMut<STFT::<f32>>,
-    mic_data: Res<MicData>
-) {
-    let mut spectrum = query.single_mut();
-    let data: Vec<f32> = mic_data.0.lock().unwrap().try_iter().collect();
-    stft.append_samples(&data);
-
-    while stft.contains_enough_to_compute() {
-        stft.compute_column(&mut spectrum.0[..]);
-        // throw away data if it wasn't read by animate_spectrum fast enough
-        stft.move_to_next_column();
     }
 }
 
