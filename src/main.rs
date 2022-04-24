@@ -83,7 +83,7 @@ fn animate_spectra(mut query: Query<(&mut Path, &Spectrum)>) {
         let samples = spectrum.0.len()/2;
 
         for i in 0..samples {
-            let height = (spectrum.0[i/2] as f32)*100.0 - 50.0;
+            let height = (spectrum.0[i] as f32)*100.0 - 50.0;
             path_builder.line_to(Vec2::new(-width+((i as f32) / (samples as f32))*width*2.0, height));
         }
         *path = path_builder.build();
