@@ -10,6 +10,8 @@ const DFT_OUT_SIZE: usize = 2048;
 const MAX_DFT_BIN: usize = DFT_OUT_SIZE/2;
 const DFT_STEP_SIZE: usize = 1024;
 const ENVELOPE_FILTER_CONST: f32 = 0.95;
+const PLOT_WIDTH: f32 = 800.0;
+const PLOT_Y_ZERO: f32 = -50.0;
 
 #[derive(Component)]
 struct Spectrum([f32; DFT_OUT_SIZE]);
@@ -88,8 +90,8 @@ fn draw_scale(
 
     let mut path_builder = PathBuilder::new();
 
-    let width = 400.0;
-    let height = -100.0;
+    let width = PLOT_WIDTH / 2.0;
+    let height = PLOT_Y_ZERO - 30.0;
 
     // Line containing tick marks
     path_builder.move_to(Vec2::new(-width, height));
@@ -144,11 +146,11 @@ fn animate_spectra(mut query: Query<(&mut Path, &Spectrum)>) {
     for (mut path, spectrum) in query.iter_mut() {
         let mut path_builder = PathBuilder::new();
 
-        let width = 400.0;
+        let width = PLOT_WIDTH / 2.0;
         let samples = MAX_DFT_BIN;
 
         for i in 0..samples {
-            let height = (spectrum.0[i] as f32)*100.0 - 50.0;
+            let height = (spectrum.0[i] as f32)*100.0 + PLOT_Y_ZERO;
             path_builder.line_to(Vec2::new(-width+((i as f32) / (samples as f32))*width*2.0, height));
         }
         *path = path_builder.build();
