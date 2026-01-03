@@ -1,14 +1,16 @@
 use bevy::prelude::*;
 use bevy_prototype_lyon::prelude::*;
-use stft::{STFT, WindowType};
+use spectrum_analyzer::{samples_fft_to_spectrum, FrequencyLimit};
+use spectrum_analyzer::scaling::divide_by_N_sqrt;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 
 
-const DFT_OUT_SIZE: usize = 2048; // Must be power of 2
-const DFT_STEP_SIZE: usize = 1024;
-const MAX_DFT_BIN: usize = DFT_OUT_SIZE/2;
+const FFT_SIZE: usize = 2048; // Must be power of 2
+const SPECTRUM_SIZE: usize = FFT_SIZE / 2;
+const MAX_DISPLAY_FREQ: f32 = 6000.0; // Only show frequencies up to this (Hz)
+const AMPLITUDE_SCALE: f32 = 500.0; // Vertical scaling for the spectrum
 
 const ENVELOPE_FILTER_CONST: f32 = 0.95;
 
@@ -16,34 +18,47 @@ const PLOT_WIDTH: f32 = 800.0;
 const PLOT_Y_ZERO: f32 = -50.0;
 
 #[derive(Component)]
-struct Spectrum([f32; DFT_OUT_SIZE]);
+struct Spectrum([f32; SPECTRUM_SIZE]);
 #[derive(Component)]
 struct RawSpectrum;
 #[derive(Component)]
 struct EnvelopeSpectrum;
 
+#[derive(Resource)]
 struct MicSampleRate(u32);
+#[derive(Resource)]
 struct MicData(Arc<Mutex<Receiver<f32>>>);
+#[derive(Resource)]
+struct SampleBuffer(Vec<f32>);
+#[derive(Resource)]
+struct MaxDisplayBin(usize); // Number of bins to display (based on MAX_DISPLAY_FREQ)
+
+// cpal::Stream is not Send, so we store it as a non-send resource
+struct MicStream(#[allow(dead_code)] cpal::Stream);
 
 
 fn main() {
     App::new()
-        .insert_resource(ClearColor(Color::rgb(1.0, 1.0, 1.0)))
-        .insert_resource(Msaa { samples: 4 })
+        .insert_resource(ClearColor(Color::WHITE))
         .add_plugins(DefaultPlugins)
-        .add_plugin(ShapePlugin)
-        .add_startup_system(setup_mic.exclusive_system())
-        .add_startup_system(setup_spectra)
-        .add_startup_system(draw_scale)
-        .add_system(mic_input)
-        .add_system(envelope_spectrum)
-        .add_system(animate_spectra)
-        .add_system(bevy::input::system::exit_on_esc_system)
+        .add_plugins(ShapePlugin)
+        .add_systems(Startup, (setup_mic, setup_spectra, draw_scale).chain())
+        .add_systems(Update, (mic_input, envelope_spectrum, animate_spectra).chain())
+        .add_systems(Update, close_on_esc)
         .run();
 }
 
+fn close_on_esc(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut exit: EventWriter<AppExit>,
+) {
+    if keyboard.just_pressed(KeyCode::Escape) {
+        exit.send(AppExit::Success);
+    }
+}
+
 // Setup gathering of microphone data
-// We need exclusive world access to add non-send resources
+// We use an exclusive system to insert non-send resources
 fn setup_mic(world: &mut World) {
     // Use channel to send data from the mic callback thread back to our worker threads
     let (tx, rx) = channel();
@@ -62,47 +77,85 @@ fn setup_mic(world: &mut World) {
         &config.into(),
         move |data: &[f32], _: &cpal::InputCallbackInfo| {
             for val in data {
-                tx.send(*val).unwrap();
+                let _ = tx.send(*val);
             }
         },
-        move |_| {},
+        move |err| {
+            eprintln!("Audio stream error: {}", err);
+        },
+        None,
     ).unwrap();
     stream.play().unwrap();
 
-    world.insert_non_send_resource(stream);
+    world.insert_non_send_resource(MicStream(stream));
     world.insert_resource(MicSampleRate(sample_rate.0));
     world.insert_resource(MicData(Arc::new(Mutex::new(rx))));
-    world.insert_resource(STFT::<f32>::new(WindowType::Hanning, 2*DFT_OUT_SIZE, DFT_STEP_SIZE));
+    world.insert_resource(SampleBuffer(Vec::with_capacity(FFT_SIZE)));
 
+    // Calculate how many FFT bins correspond to MAX_DISPLAY_FREQ
+    let nyquist = sample_rate.0 as f32 / 2.0;
+    let bin_width = nyquist / SPECTRUM_SIZE as f32;
+    let max_bin = ((MAX_DISPLAY_FREQ / bin_width) as usize).min(SPECTRUM_SIZE);
+    world.insert_resource(MaxDisplayBin(max_bin));
 }
 
 // Setup the spectra we have and the paths we'll use for associated graphs
 fn setup_spectra(mut commands: Commands) {
-    commands.spawn_bundle(OrthographicCameraBundle::new_2d());
+    commands.spawn(Camera2d);
 
-    commands.spawn().insert(Spectrum([0.0; DFT_OUT_SIZE])).insert(RawSpectrum);
+    commands.spawn((Spectrum([0.0; SPECTRUM_SIZE]), RawSpectrum));
 
-    commands.spawn_bundle(GeometryBuilder::build_as(
-        &PathBuilder::new().build(),
-        DrawMode::Stroke(StrokeMode::new(Color::BLACK, 1.0)),
-        Transform::default(),
-    )).insert(Spectrum([0.0; DFT_OUT_SIZE])).insert(EnvelopeSpectrum);
+    let path = PathBuilder::new().build();
+    commands.spawn((
+        ShapeBundle {
+            path,
+            transform: Transform::default(),
+            ..default()
+        },
+        Stroke::new(Color::BLACK, 1.0),
+        Spectrum([0.0; SPECTRUM_SIZE]),
+        EnvelopeSpectrum,
+    ));
 }
 
-// Take our microphone data and get frequency information from it using the STFT
+// Take our microphone data and get frequency information from it using FFT
 fn mic_input(
     mut query: Query<&mut Spectrum, With<RawSpectrum>>,
-    mut stft: ResMut<STFT::<f32>>,
-    mic_data: Res<MicData>
+    mut sample_buffer: ResMut<SampleBuffer>,
+    mic_data: Res<MicData>,
+    sample_rate: Res<MicSampleRate>,
 ) {
     let mut spectrum = query.single_mut();
-    let data: Vec<f32> = mic_data.0.lock().unwrap().try_iter().collect();
-    stft.append_samples(&data);
 
-    while stft.contains_enough_to_compute() {
-        stft.compute_column(&mut spectrum.0[..]);
-        // throw away data if it wasn't read by animate_spectrum fast enough
-        stft.move_to_next_column();
+    // Collect new samples from mic
+    let new_samples: Vec<f32> = mic_data.0.lock().unwrap().try_iter().collect();
+    sample_buffer.0.extend(new_samples);
+
+    // Process when we have enough samples
+    while sample_buffer.0.len() >= FFT_SIZE {
+        // Take the first FFT_SIZE samples
+        let samples: Vec<f32> = sample_buffer.0.drain(..FFT_SIZE).collect();
+
+        // Apply Hanning window
+        let windowed: Vec<f32> = samples.iter().enumerate().map(|(i, &s)| {
+            let window = 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / (FFT_SIZE - 1) as f32).cos());
+            s * window
+        }).collect();
+
+        // Compute FFT
+        if let Ok(freq_spectrum) = samples_fft_to_spectrum(
+            &windowed,
+            sample_rate.0,
+            FrequencyLimit::All,
+            Some(&divide_by_N_sqrt),
+        ) {
+            // Copy spectrum data to our component
+            for (i, (_, val)) in freq_spectrum.data().iter().enumerate() {
+                if i < SPECTRUM_SIZE {
+                    spectrum.0[i] = val.val();
+                }
+            }
+        }
     }
 }
 
@@ -124,35 +177,39 @@ fn envelope_spectrum(
 fn draw_scale(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    sample_rate: Res<MicSampleRate>
 ) {
-    let mut paths = Vec::new();
-    let mut labels = Vec::new();
-
-    let mut path_builder = PathBuilder::new();
-
     let width = PLOT_WIDTH / 2.0;
     let height = PLOT_Y_ZERO - 30.0;
     let num_ticks = 20;
 
-    let color = Color::GRAY;
+    let color = Color::srgb(0.5, 0.5, 0.5);
     let font = asset_server.load("fonts/EBGaramond-Medium.ttf");
-    let text_style = TextStyle {
-        font,
-        font_size: 12.0,
-        color: color,
-    };
-    let text_alignment = TextAlignment {
-        vertical: VerticalAlign::Center,
-        horizontal: HorizontalAlign::Center,
-    };
 
     // Line containing tick marks
+    let mut path_builder = PathBuilder::new();
     path_builder.move_to(Vec2::new(-width, height));
     path_builder.line_to(Vec2::new(width, height));
-    paths.push(path_builder.build());
+    let path = path_builder.build();
+    commands.spawn((
+        ShapeBundle {
+            path,
+            transform: Transform::default(),
+            ..default()
+        },
+        Stroke::new(color, 1.0),
+    ));
 
-    labels.push(("Hz".to_string(), Vec3::new(-width - 20.0, height, 0.0)));
+    // Hz label
+    commands.spawn((
+        Text2d::new("Hz"),
+        TextFont {
+            font: font.clone(),
+            font_size: 12.0,
+            ..default()
+        },
+        TextColor(color),
+        Transform::from_translation(Vec3::new(-width - 20.0, height, 0.0)),
+    ));
 
     for i in 0..=num_ticks {
         let tick_pos = -width + (((i as f32) / (num_ticks as f32)) * width * 2.0);
@@ -161,46 +218,46 @@ fn draw_scale(
         let mut path_builder = PathBuilder::new();
         path_builder.move_to(Vec2::new(tick_pos, height+10.0));
         path_builder.line_to(Vec2::new(tick_pos, height-10.0));
-        paths.push(path_builder.build());
+        let path = path_builder.build();
+        commands.spawn((
+            ShapeBundle {
+                path,
+                transform: Transform::default(),
+                ..default()
+            },
+            Stroke::new(color, 1.0),
+        ));
 
-        // Draw labels
-        let freq_hz = ((i as f32) / (num_ticks as f32))
-            * ((MAX_DFT_BIN as f32) / (2.0 * DFT_OUT_SIZE as f32))
-            * (sample_rate.0 as f32);
-        labels.push((format!("{:.0}", freq_hz), Vec3::new(tick_pos, height-20.0, 0.0)));
-    }
-
-    for path in paths.iter() {
-        commands.spawn_bundle(GeometryBuilder::build_as(
-            path,
-            DrawMode::Stroke(StrokeMode::new(color, 1.0)),
-            Transform::default(),
+        // Draw labels - scale goes from 0 to MAX_DISPLAY_FREQ
+        let freq_hz = ((i as f32) / (num_ticks as f32)) * MAX_DISPLAY_FREQ;
+        commands.spawn((
+            Text2d::new(format!("{:.0}", freq_hz)),
+            TextFont {
+                font: font.clone(),
+                font_size: 12.0,
+                ..default()
+            },
+            TextColor(color),
+            Transform::from_translation(Vec3::new(tick_pos, height-20.0, 0.0)),
         ));
     }
-
-    for (text, pos) in labels {
-        commands.spawn_bundle(Text2dBundle {
-            text: Text::with_section(text, text_style.clone(), text_alignment),
-            transform: Transform::from_translation(pos),
-            ..default()
-        });
-    }
-
 }
 
 // Actually draw the graph for each frame
-fn animate_spectra(mut query: Query<(&mut Path, &Spectrum)>) {
+fn animate_spectra(
+    mut query: Query<(&mut Path, &Spectrum)>,
+    max_bin: Res<MaxDisplayBin>,
+) {
     for (mut path, spectrum) in query.iter_mut() {
         let mut path_builder = PathBuilder::new();
 
         let width = PLOT_WIDTH / 2.0;
-        let samples = MAX_DFT_BIN;
+        let samples = max_bin.0;
 
         for i in 0..samples {
-            let height = (spectrum.0[i] as f32)*100.0 + PLOT_Y_ZERO;
+            let height = spectrum.0[i] * AMPLITUDE_SCALE + PLOT_Y_ZERO;
             path_builder.line_to(Vec2::new(-width+((i as f32) / (samples as f32))*width*2.0, height));
         }
         *path = path_builder.build();
     }
 }
-
