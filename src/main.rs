@@ -7,7 +7,8 @@ use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 
 
-const FFT_SIZE: usize = 2048; // Must be power of 2
+const FFT_SIZE: usize = 8192; // Must be power of 2 (larger = more frequency resolution)
+const FFT_STEP: usize = 1024; // Sliding window step size (smaller = more responsive, more CPU)
 const SPECTRUM_SIZE: usize = FFT_SIZE / 2;
 const MAX_DISPLAY_FREQ: f32 = 6000.0; // Only show frequencies up to this (Hz)
 const AMPLITUDE_SCALE: f32 = 500.0; // Vertical scaling for the spectrum
@@ -131,10 +132,10 @@ fn mic_input(
     let new_samples: Vec<f32> = mic_data.0.lock().unwrap().try_iter().collect();
     sample_buffer.0.extend(new_samples);
 
-    // Process when we have enough samples
+    // Use sliding window: compute FFT on FFT_SIZE samples, then slide by FFT_STEP
     while sample_buffer.0.len() >= FFT_SIZE {
-        // Take the first FFT_SIZE samples
-        let samples: Vec<f32> = sample_buffer.0.drain(..FFT_SIZE).collect();
+        // Take the first FFT_SIZE samples (but don't remove them yet)
+        let samples: &[f32] = &sample_buffer.0[..FFT_SIZE];
 
         // Apply Hanning window
         let windowed: Vec<f32> = samples.iter().enumerate().map(|(i, &s)| {
@@ -156,6 +157,9 @@ fn mic_input(
                 }
             }
         }
+
+        // Slide window by FFT_STEP (not FFT_SIZE) for overlapping windows
+        sample_buffer.0.drain(..FFT_STEP);
     }
 }
 
